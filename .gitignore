@@ -1,0 +1,6 @@
+# Baixados por "servidor.py --baixar" (OpenCV.js tem 10 MB)
+web/vendor/
+# Certificado próprio gerado na primeira execução
+.cert/
+__pycache__/
+*.pyc

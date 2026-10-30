@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MASH · Câmera do teste de iodo (protótipo)</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+  body { margin: 0; background: #14110f; color: #f3ede6; }
+  header { padding: 12px 16px; border-bottom: 1px solid #2c2622; }
+  header h1 { margin: 0; font-size: 1.1rem; }
+  header p { margin: 4px 0 0; font-size: .8rem; color: #b7aca2; }
+  main { max-width: 640px; margin: 0 auto; padding: 12px 16px 40px; }
+  .camera { position: relative; background: #000; border-radius: 12px; overflow: hidden; }
+  video { display: block; width: 100%; height: auto; }
+  #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .resultado { margin: 12px 0; padding: 14px; border-radius: 12px; font-size: 1.3rem;
+               font-weight: 700; text-align: center; }
+  .neutro { background: #2c2622; }
+  .AMIDO_PRESENTE { background: #5a1d1d; }
+  .SEM_AMIDO { background: #1d4a2a; }
+  .INCONCLUSIVO { background: #5a4a1d; }
+  .botoes { display: flex; gap: 8px; }
+  button { flex: 1; padding: 14px; font-size: 1rem; font-weight: 600; border: 0;
+           border-radius: 10px; background: #d98e2b; color: #14110f; }
+  button.secundario { background: #3a332e; color: #f3ede6; }
+  button:disabled { opacity: .4; }
+  #medidas { font: .85rem ui-monospace, monospace; color: #b7aca2; min-height: 1.2em; }
+  .amostra { display: inline-block; width: 1em; height: 1em; border-radius: 50%;
+             vertical-align: middle; border: 1px solid #fff4; }
+  details { margin-top: 12px; background: #1e1a17; border-radius: 10px; padding: 8px 12px; }
+  summary { cursor: pointer; font-weight: 600; }
+  label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 8px 0; font-size: .9rem; }
+  input[type=text], input[type=number], select { width: 7em; padding: 6px; background: #14110f;
+           color: inherit; border: 1px solid #3a332e; border-radius: 6px; }
+  .status { font-size: .85rem; color: #b7aca2; }
+  .ok { color: #7fd28f; } .erro { color: #e88; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MASH · Câmera do teste de iodo</h1>
+  <p>Protótipo: este celular faz o papel da câmera da máquina. Centralize a gota no círculo menor; o anel em volta deve ficar sobre o prato branco.</p>
+</header>
+<main>
+  <div class="camera">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+  </div>
+
+  <div id="resultado" class="resultado neutro">Baixando OpenCV (cerca de 10 MB)...</div>
+  <div class="botoes">
+    <button id="btnCamera" class="secundario">Ligar câmera</button>
+    <button id="btnAnalisar" disabled>Analisar</button>
+  </div>
+  <p id="medidas"></p>
+
+  <details open>
+    <summary>Conexão com a máquina</summary>
+    <label>Código da máquina <input id="inCodigo" type="text" value="demo01"></label>
+    <label>Modo
+      <select id="inModo">
+        <option value="auto">Automático</option>
+        <option value="local">Local (sem internet)</option>
+        <option value="online">Online (MQTT, Wokwi)</option>
+      </select>
+    </label>
+    <div class="botoes"><button id="btnConectar" class="secundario">Conectar</button></div>
+    <p class="status">Modo: <span id="stModo">?</span> · Conexão: <span id="stBroker">desconectado</span> · Máquina: <span id="stMaquina">?</span></p>
+  </details>
+
+  <details>
+    <summary>Calibração</summary>
+    <label><span>Leitura contínua (não envia para a máquina)</span> <input id="inContinua" type="checkbox"></label>
+    <label>Escuro se brilho relativo &lt; <input id="vEscuro" type="number" step="0.05" value="0.40"></label>
+    <label>Saturação mínima <input id="sMin" type="number" step="5" value="50"></label>
+    <label>Azul: matiz de <input id="hAzulMin" type="number" value="90"></label>
+    <label>Azul: matiz até <input id="hAzulMax" type="number" value="140"></label>
+    <label>Amarelo/âmbar: matiz de <input id="hAmMin" type="number" value="8"></label>
+    <label>Amarelo/âmbar: matiz até <input id="hAmMax" type="number" value="40"></label>
+    <label>Luz mínima no prato (0 a 255) <input id="luzMin" type="number" value="70"></label>
+    <label>Diferença mínima do fundo (0 a 255) <input id="difMin" type="number" value="35"></label>
+    <label>Área mínima da gota (% do círculo) <input id="areaMin" type="number" value="3"></label>
+    <p class="status">Matiz no padrão do OpenCV (0 a 180). O brilho é relativo ao prato branco, então mudar a luz da sala afeta menos.</p>
+  </details>
+
+  <canvas id="captura" hidden></canvas>
+</main>
+
+<script src="comum.js"></script>
+<script>
+const RAIO_GOTA = 0.10;              // raio do círculo da gota, fração do lado menor da imagem
+const ANEL_DE = 1.6, ANEL_ATE = 2.3; // anel de referência (prato), em múltiplos do raio
+
+const $ = id => document.getElementById(id);
+const video = $('video'), overlay = $('overlay'), captura = $('captura');
+const elResultado = $('resultado'), elMedidas = $('medidas');
+let cvPronto = false, cameraLigada = false, cliente = null, timerContinuo = null;
+
+const TEXTO = {
+  AMIDO_PRESENTE: 'AMIDO PRESENTE · continuar a rampa',
+  SEM_AMIDO: 'SEM AMIDO · conversão concluída',
+  INCONCLUSIVO: 'Não foi possível ler · reposicione',
+};
+
+// Configuração salva no aparelho
+const CAMPOS = ['inCodigo', 'inModo', 'vEscuro', 'sMin', 'hAzulMin', 'hAzulMax', 'hAmMin', 'hAmMax', 'luzMin', 'difMin', 'areaMin'];
+CAMPOS.forEach(id => {
+  const salvo = localStorage.getItem('mash-' + id);
+  if (salvo !== null) $(id).value = salvo;
+  $(id).addEventListener('change', () => localStorage.setItem('mash-' + id, $(id).value));
+});
+const num = id => Number($(id).value);
+
+function atualizarBotao() {
+  $('btnAnalisar').disabled = !(cvPronto && cameraLigada);
+}
+
+// OpenCV.js: dependendo da versão, "cv" já vem pronto ou é uma Promise.
+// Em vez de depender de um evento que pode ter passado, confere até ficar pronto.
+function opencvCarregado() {
+  elResultado.textContent = 'Iniciando OpenCV...';
+  const inicio = Date.now();
+  let pediuThen = false;
+  const conferir = () => {
+    if (window.cv && window.cv.Mat) {
+      cvPronto = true;
+      elResultado.className = 'resultado neutro';
+      elResultado.textContent = cameraLigada ? 'Pronto para analisar' : 'OpenCV pronto · ligue a câmera';
+      atualizarBotao();
+      return;
+    }
+    if (window.cv && typeof window.cv.then === 'function' && !pediuThen) {
+      pediuThen = true;
+      window.cv.then(m => { delete m.then; window.cv = m; });
+    }
+    if (Date.now() - inicio > 60000) {
+      elResultado.textContent = 'OpenCV não iniciou. Recarregue a página';
+      return;
+    }
+    setTimeout(conferir, 200);
+  };
+  conferir();
+}
+
+function opencvFalhou() {
+  elResultado.className = 'resultado INCONCLUSIVO';
+  elResultado.textContent = 'OpenCV não carregou. Sem internet, rode "servidor.py --baixar" antes, com internet';
+}
+
+async function ligarCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }, audio: false,
+    });
+    video.srcObject = stream;
+    await video.play();
+    cameraLigada = true;
+    $('btnCamera').textContent = 'Câmera ligada';
+    $('btnCamera').disabled = true;
+    if (cvPronto) elResultado.textContent = 'Pronto para analisar';
+    atualizarBotao();
+    requestAnimationFrame(desenharGuia);
+  } catch (e) {
+    elResultado.textContent = 'Câmera bloqueada: abra por HTTPS e permita o acesso';
+    console.error(e);
+  }
+}
+
+function desenharGuia() {
+  const w = overlay.clientWidth, h = overlay.clientHeight;
+  if (overlay.width !== w || overlay.height !== h) { overlay.width = w; overlay.height = h; }
+  const ctx = overlay.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  const r = Math.min(w, h) * RAIO_GOTA;
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#ffffffdd';
+  ctx.beginPath(); ctx.arc(w / 2, h / 2, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([6, 6]);
+  ctx.strokeStyle = '#ffffff77';
+  [ANEL_DE, ANEL_ATE].forEach(k => { ctx.beginPath(); ctx.arc(w / 2, h / 2, r * k, 0, Math.PI * 2); ctx.stroke(); });
+  ctx.setLineDash([]);
+  requestAnimationFrame(desenharGuia);
+}
+
+// Lê a gota com OpenCV e devolve a classe e as medidas
+function medir() {
+  const w = video.videoWidth, h = video.videoHeight;
+  captura.width = w; captura.height = h;
+  captura.getContext('2d').drawImage(video, 0, 0, w, h);
+
+  const src = cv.imread(captura);
+  const rgb = new cv.Mat();
+  cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
+  cv.GaussianBlur(rgb, rgb, new cv.Size(7, 7), 0);
+
+  const centro = new cv.Point(Math.round(w / 2), Math.round(h / 2));
+  const r = Math.round(Math.min(w, h) * RAIO_GOTA);
+  const branco = new cv.Scalar(255), preto = new cv.Scalar(0);
+
+  const mGota = cv.Mat.zeros(h, w, cv.CV_8UC1);
+  cv.circle(mGota, centro, r, branco, -1);
+  const mPrato = cv.Mat.zeros(h, w, cv.CV_8UC1);
+  cv.circle(mPrato, centro, Math.round(r * ANEL_ATE), branco, -1);
+  cv.circle(mPrato, centro, Math.round(r * ANEL_DE), preto, -1);
+
+  const prato = cv.mean(rgb, mPrato);
+
+  // Segmentação: dentro do círculo, fica só o que difere do prato.
+  // Assim uma gota menor que o círculo não é "diluída" pelo branco em volta.
+  const fundo = new cv.Mat(h, w, cv.CV_8UC3, new cv.Scalar(prato[0], prato[1], prato[2]));
+  const dif = new cv.Mat();
+  cv.absdiff(rgb, fundo, dif);
+  const canais = new cv.MatVector();
+  cv.split(dif, canais);
+  const maior = new cv.Mat();
+  cv.max(canais.get(0), canais.get(1), maior);
+  cv.max(maior, canais.get(2), maior);           // maior diferença entre R, G e B
+  const mMancha = new cv.Mat();
+  cv.threshold(maior, mMancha, num('difMin'), 255, cv.THRESH_BINARY);
+  cv.bitwise_and(mMancha, mGota, mMancha);
+  const nucleo = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5));
+  cv.morphologyEx(mMancha, mMancha, cv.MORPH_OPEN, nucleo); // tira ruído solto
+  const area = cv.countNonZero(mMancha) / Math.max(cv.countNonZero(mGota), 1);
+  const gota = area > 0 ? cv.mean(rgb, mMancha) : cv.mean(rgb, mGota);
+  [fundo, dif, maior, mMancha, nucleo].forEach(m => m.delete());
+  for (let i = 0; i < canais.size(); i++) canais.get(i).delete();
+  canais.delete();
+
+  // Normaliza a cor da gota pela cor do prato (o prato é a referência de branco)
+  const norm = [0, 1, 2].map(i => Math.min(255, Math.round(gota[i] / Math.max(prato[i], 1) * 255)));
+  const px = new cv.Mat(1, 1, cv.CV_8UC3);
+  px.data.set(norm);
+  const hsv = new cv.Mat();
+  cv.cvtColor(px, hsv, cv.COLOR_RGB2HSV);
+  const H = hsv.data[0], S = hsv.data[1], V = hsv.data[2] / 255;
+  const luzPrato = (prato[0] + prato[1] + prato[2]) / 3;
+
+  [src, rgb, mGota, mPrato, px, hsv].forEach(m => m.delete());
+
+  // codigo: motivo curto que vai para a máquina (luz, gota, cor, escura, azul, amarela)
+  let classe, motivo, codigo;
+  if (luzPrato < num('luzMin')) { classe = 'INCONCLUSIVO'; motivo = 'pouca luz ou anel fora do branco'; codigo = 'luz'; }
+  else if (area * 100 < num('areaMin')) { classe = 'INCONCLUSIVO'; motivo = 'nenhuma gota no círculo'; codigo = 'gota'; }
+  else if (V < num('vEscuro')) { classe = 'AMIDO_PRESENTE'; motivo = 'gota escura'; codigo = 'escura'; }
+  else if (S >= num('sMin') && H >= num('hAzulMin') && H <= num('hAzulMax')) { classe = 'AMIDO_PRESENTE'; motivo = 'gota azulada'; codigo = 'azul'; }
+  else if (S >= num('sMin') && H >= num('hAmMin') && H <= num('hAmMax')) { classe = 'SEM_AMIDO'; motivo = 'gota amarela/âmbar'; codigo = 'amarela'; }
+  else { classe = 'INCONCLUSIVO'; motivo = 'cor fora das faixas'; codigo = 'cor'; }
+
+  // Luz do prato em % (0 a 255 vira 0 a 100), para a máquina mostrar
+  const luz = Math.round(luzPrato / 255 * 100);
+  return { classe, motivo, codigo, luz, H, S, V, luzPrato, area, rgb: gota.slice(0, 3).map(Math.round) };
+}
+
+function mostrar(m) {
+  elResultado.className = 'resultado ' + m.classe;
+  elResultado.textContent = TEXTO[m.classe] + (m.classe === 'INCONCLUSIVO' ? ` (${m.motivo})` : '');
+  elMedidas.innerHTML =
+    `<span class="amostra" style="background:rgb(${m.rgb.join(',')})"></span> ` +
+    `H=${m.H} S=${m.S} V=${m.V.toFixed(2)} · luz=${m.luz}% · ` +
+    `gota=${Math.round(m.area * 100)}% do círculo · ${m.motivo}`;
+}
+
+function analisar(numeroPedido) {
+  if (!cvPronto || !cameraLigada) {
+    // Responde mesmo assim, para a máquina não ficar esperando à toa
+    const motivo = !cvPronto ? 'opencv' : 'camera';
+    elResultado.className = 'resultado INCONCLUSIVO';
+    elResultado.textContent = !cvPronto ? 'OpenCV ainda carregando, tente de novo' : 'Ligue a câmera primeiro';
+    if (cliente) cliente.publicar('resultado', `ERRO;${motivo};n=${numeroPedido ?? 0}`);
+    return;
+  }
+  const m = medir();
+  mostrar(m);
+  if (cliente) {
+    // m = motivo curto, l = luz do prato em %
+    cliente.publicar('resultado',
+      `${m.classe};h=${m.H};s=${m.S};v=${m.V.toFixed(2)};m=${m.codigo};l=${m.luz};n=${numeroPedido ?? 0}`);
+  }
+}
+
+// Conversa com a máquina pelo transporte de comum.js (local ou online):
+// a máquina publica no canal "pedido" e a câmera responde no canal "resultado".
+async function conectar() {
+  if (cliente) cliente.fechar();
+  cliente = null;
+  $('stBroker').textContent = 'conectando...';
+  $('stMaquina').textContent = '?';
+  const modo = await escolherModo($('inModo').value);
+  $('stModo').textContent = modo === 'local' ? 'local (sem internet)' : 'online';
+  try {
+    cliente = await conectarCanal({
+      modo,
+      codigo: $('inCodigo').value.trim(),
+      ultimaVontade: { canal: 'camera', texto: 'offline' },
+      aoEstado: ligado => {
+        $('stBroker').innerHTML = ligado ? '<span class="ok">conectado</span>' : '<span class="erro">desconectado</span>';
+        if (ligado && cliente) cliente.publicar('camera', 'online', true);
+      },
+      aoMensagem: (canal, texto) => {
+        if (canal === 'status') {
+          $('stMaquina').innerHTML = texto === 'online' ? '<span class="ok">online</span>' : '<span class="erro">offline</span>';
+        } else if (canal === 'pedido') {
+          elResultado.className = 'resultado neutro';
+          elResultado.textContent = 'Máquina pediu leitura...';
+          setTimeout(() => analisar(texto), 400); // tempo para o LED de iluminação acender
+        }
+      },
+    });
+    cliente.publicar('camera', 'online', true);
+  } catch (e) {
+    $('stBroker').innerHTML = '<span class="erro">sem conexão (sem internet? use o modo local)</span>';
+    console.error(e);
+  }
+}
+
+$('btnCamera').addEventListener('click', ligarCamera);
+$('btnAnalisar').addEventListener('click', () => analisar(0));
+$('btnConectar').addEventListener('click', conectar);
+$('inContinua').addEventListener('change', e => {
+  clearInterval(timerContinuo);
+  if (e.target.checked) timerContinuo = setInterval(() => { if (cvPronto && cameraLigada) mostrar(medir()); }, 700);
+});
+
+conectar();
+// OpenCV: cópia local (servidor.py --baixar) primeiro; sem ela, a CDN
+carregarScript(URL_OPENCV).then(opencvCarregado, opencvFalhou);
+</script>
+</body>
+</html>
