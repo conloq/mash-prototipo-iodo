@@ -127,6 +127,8 @@ A página da câmera precisa estar no modo online (aberta pelo GitHub Pages ou p
 
 ## Roteiro na banca (cerca de 2 minutos)
 
+**Preparação, montagem no local, calibração, o que fazer se algo falhar e o plano B:** [Dia da banca: passo a passo](docs/dia-da-banca.md). Este roteiro é só a fala.
+
 1. Projetar a máquina virtual: "esta é a máquina do teste de iodo".
 2. Posicionar as duas amostras coloridas no prato, explicando que representam os estados do teste.
 3. Apertar ANALISAR com o celular sobre a gota escura: LED vermelho e "AMIDO PRESENTE".
